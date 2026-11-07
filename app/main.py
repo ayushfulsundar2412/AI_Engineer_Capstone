@@ -3,7 +3,10 @@ import json
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
-
+from sqlalchemy.exc import IntegrityError
+from app.schemas import (
+    DependencyCreate, DependencyOut, ResourceCreate, ResourceOut, ScanCreate, ScanOut,
+)
 from app.database import get_conn
 from app.schemas import ResourceCreate, ResourceOut, ScanCreate, ScanOut
 
@@ -93,3 +96,51 @@ def list_resources(
         params["rtype"] = resource_type
     rows = conn.execute(text(query + " ORDER BY id"), params).mappings().all()
     return [dict(r) for r in rows]  
+
+DEP_COLS = "id, scan_id, from_resource_id, to_resource_id, relationship"
+
+
+@app.post("/scans/{scan_id}/dependencies", response_model=DependencyOut, status_code=201)
+def add_dependency(
+    scan_id: int, dep: DependencyCreate, conn: Connection = Depends(get_conn)
+):
+    get_scan_or_404(conn, scan_id)
+    if dep.from_resource_id == dep.to_resource_id:
+        raise HTTPException(status_code=422, detail="A resource cannot depend on itself")
+
+    found = conn.execute(
+        text("SELECT id FROM resources WHERE scan_id = :sid AND id IN (:a, :b)"),
+        {"sid": scan_id, "a": dep.from_resource_id, "b": dep.to_resource_id},
+    ).all()
+    if len(found) != 2:
+        raise HTTPException(
+            status_code=404, detail="Both resources must exist in this scan"
+        )
+
+    try:
+        row = conn.execute(
+            text(
+                "INSERT INTO resource_dependencies "
+                "(scan_id, from_resource_id, to_resource_id, relationship) "
+                f"VALUES (:sid, :a, :b, :rel) RETURNING {DEP_COLS}"
+            ),
+            {
+                "sid": scan_id,
+                "a": dep.from_resource_id,
+                "b": dep.to_resource_id,
+                "rel": dep.relationship,
+            },
+        ).mappings().one()
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="This dependency already exists")
+    return dict(row)
+
+
+@app.get("/scans/{scan_id}/dependencies", response_model=list[DependencyOut])
+def list_dependencies(scan_id: int, conn: Connection = Depends(get_conn)):
+    get_scan_or_404(conn, scan_id)
+    rows = conn.execute(
+        text(f"SELECT {DEP_COLS} FROM resource_dependencies WHERE scan_id = :sid ORDER BY id"),
+        {"sid": scan_id},
+    ).mappings().all()
+    return [dict(r) for r in rows]

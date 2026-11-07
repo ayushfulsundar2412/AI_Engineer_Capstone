@@ -24,10 +24,20 @@ class ResourceCreate(BaseModel):
     resource_id: str
     name: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
-    monthly_cost_usd: float | None = None #Money can be float for now but for real cost estimates we would use decimal
+    monthly_cost_usd: float | None = Field(default=None, ge=0) #Money can be float for now but for real cost estimates we would use decimal
 
 
 class ResourceOut(ResourceCreate):
     id: int
     scan_id: int
     created_at: datetime
+
+class DependencyCreate(BaseModel):
+    from_resource_id: int
+    to_resource_id: int
+    relationship: str = Field(min_length=1)
+
+
+class DependencyOut(DependencyCreate):
+    id: int
+    scan_id: int
