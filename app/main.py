@@ -144,3 +144,25 @@ def list_dependencies(scan_id: int, conn: Connection = Depends(get_conn)):
         {"sid": scan_id},
     ).mappings().all()
     return [dict(r) for r in rows]
+
+@app.get("/scans/{scan_id}/summary")
+def scan_summary(scan_id: int, conn: Connection = Depends(get_conn)):
+    get_scan_or_404(conn, scan_id)
+
+    rows = conn.execute(
+        text(
+            "SELECT resource_type, COUNT(*) AS n, "
+            "COALESCE(SUM(monthly_cost_usd), 0) AS cost "
+            "FROM resources WHERE scan_id = :sid GROUP BY resource_type"
+        ),
+        {"sid": scan_id},
+    ).mappings().all()
+
+    by_type = {r["resource_type"]: r["n"] for r in rows}
+
+    return {
+        "scan_id": scan_id,
+        "resource_count": sum(r["n"] for r in rows),
+        "total_monthly_cost_usd": float(sum(r["cost"] for r in rows)),
+        "by_type": by_type,
+    }

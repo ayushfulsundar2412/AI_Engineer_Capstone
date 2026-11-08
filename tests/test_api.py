@@ -95,3 +95,20 @@ def test_dependency_across_scans_returns_404(client):
     b = make_resource(client, scan2["id"], resource_id="i-2")
     body = {"from_resource_id": a["id"], "to_resource_id": b["id"], "relationship": "uses"}
     assert client.post(f"/scans/{scan1['id']}/dependencies", json=body).status_code == 404
+
+def test_scan_summary(client):
+    scan = make_scan(client)
+    make_resource(client, scan["id"], resource_id="i-1", monthly_cost_usd=10)
+    make_resource(client, scan["id"], resource_type="s3_bucket",
+                  resource_id="b-1", monthly_cost_usd=5.5)
+
+    r = client.get(f"/scans/{scan['id']}/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["resource_count"] == 2
+    assert body["total_monthly_cost_usd"] == 15.5
+    assert body["by_type"] == {"ec2_instance": 1, "s3_bucket": 1}
+
+
+def test_summary_missing_scan_returns_404(client):
+    assert client.get("/scans/999/summary").status_code == 404
