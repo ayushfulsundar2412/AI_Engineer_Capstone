@@ -1,6 +1,6 @@
 import json
 
-from app.ordering import CycleError, creation_order
+from app.ordering import CycleError, affected_by, creation_order
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -12,6 +12,7 @@ from app.database import get_conn
 from app.schemas import ResourceCreate, ResourceOut, ScanCreate, ScanOut
 
 import logging
+from app import cache
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -92,6 +93,7 @@ def add_resource(
             "cost": resource.monthly_cost_usd,
         },
     ).mappings().one()
+    cache.delete(f"scan:{scan_id}:summary", f"scan:{scan_id}:creation-order")
     return dict(row)
 
 
@@ -146,6 +148,7 @@ def add_dependency(
         ).mappings().one()
     except IntegrityError:
         raise HTTPException(status_code=409, detail="This dependency already exists")
+    cache.delete(f"scan:{scan_id}:creation-order")
     return dict(row)
 
 
@@ -160,8 +163,12 @@ def list_dependencies(scan_id: int, conn: Connection = Depends(get_conn)):
 
 @app.get("/scans/{scan_id}/summary")
 def scan_summary(scan_id: int, conn: Connection = Depends(get_conn)):
-    get_scan_or_404(conn, scan_id)
+    key = f"scan:{scan_id}:summary"
+    cached = cache.get_json(key)
+    if cached is not None:
+        return cached
 
+    get_scan_or_404(conn, scan_id)
     rows = conn.execute(
         text(
             "SELECT resource_type, COUNT(*) AS n, "
@@ -171,17 +178,22 @@ def scan_summary(scan_id: int, conn: Connection = Depends(get_conn)):
         {"sid": scan_id},
     ).mappings().all()
 
-    by_type = {r["resource_type"]: r["n"] for r in rows}
-
-    return {
+    result = {
         "scan_id": scan_id,
         "resource_count": sum(r["n"] for r in rows),
         "total_monthly_cost_usd": float(sum(r["cost"] for r in rows)),
-        "by_type": by_type,
+        "by_type": {r["resource_type"]: r["n"] for r in rows},
     }
+    cache.set_json(key, result)
+    return result
 
 @app.get("/scans/{scan_id}/creation-order")
 def get_creation_order(scan_id: int, conn: Connection = Depends(get_conn)):
+    key = f"scan:{scan_id}:creation-order"
+    cached = cache.get_json(key)
+    if cached is not None:
+        return cached
+
     get_scan_or_404(conn, scan_id)
     resources = conn.execute(
         text("SELECT id, resource_type, name FROM resources WHERE scan_id = :sid ORDER BY id"),
@@ -204,7 +216,7 @@ def get_creation_order(scan_id: int, conn: Connection = Depends(get_conn)):
         raise HTTPException(status_code=409, detail=str(exc))
 
     by_id = {r["id"]: r for r in resources}
-    return [
+    result = [
         {
             "position": i + 1,
             "id": rid,
@@ -213,8 +225,41 @@ def get_creation_order(scan_id: int, conn: Connection = Depends(get_conn)):
         }
         for i, rid in enumerate(order)
     ]
+    cache.set_json(key, result)
+    return result
 
 @app.exception_handler(Exception)
 async def unhandled_error(request: Request, exc: Exception):
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+@app.get("/scans/{scan_id}/resources/{resource_id}/impact")
+def resource_impact(scan_id: int, resource_id: int, conn: Connection = Depends(get_conn)):
+    get_scan_or_404(conn, scan_id)
+    resources = conn.execute(
+        text("SELECT id, resource_type, name FROM resources WHERE scan_id = :sid"),
+        {"sid": scan_id},
+    ).mappings().all()
+    by_id = {r["id"]: r for r in resources}
+    if resource_id not in by_id:
+        raise HTTPException(
+            status_code=404, detail=f"Resource {resource_id} not found in scan {scan_id}"
+        )
+    edges = conn.execute(
+        text(
+            "SELECT from_resource_id, to_resource_id "
+            "FROM resource_dependencies WHERE scan_id = :sid"
+        ),
+        {"sid": scan_id},
+    ).all()
+
+    affected = affected_by(resource_id, [(e[0], e[1]) for e in edges])
+    return {
+        "resource_id": resource_id,
+        "name": by_id[resource_id]["name"],
+        "affected_count": len(affected),
+        "affected": [
+            {"id": rid, "resource_type": by_id[rid]["resource_type"], "name": by_id[rid]["name"]}
+            for rid in affected
+        ],
+    }

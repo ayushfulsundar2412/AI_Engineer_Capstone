@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TEST_URL = os.environ["TEST_DATABASE_URL"]
+os.environ["REDIS_URL"] = ""  # tests never touch Redis
 # Safety net: refuse to run if this doesn't look like a test database
 assert TEST_URL.rsplit("/", 1)[-1].endswith("_test"), "TEST_DATABASE_URL must end in _test"
 

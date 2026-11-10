@@ -1,6 +1,7 @@
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.16.0
+async-timeout==5.0.1
 certifi==2026.10.23
 click==8.5.0
 colorama==0.4.6
@@ -21,6 +22,7 @@ pydantic_core==2.50.2
 Pygments==2.21.0
 pytest==9.2.0
 python-dotenv==1.2.4
+redis==8.1.0
 SQLAlchemy==2.0.57
 starlette==1.7.0
 tomli==2.5.0

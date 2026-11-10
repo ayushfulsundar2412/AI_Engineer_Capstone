@@ -140,3 +140,38 @@ def test_creation_order_cycle_returns_409(client):
                   "relationship": "uses"},
         )
     assert client.get(f"/scans/{scan['id']}/creation-order").status_code == 409
+
+def test_summary_cache_is_filled_and_invalidated(client, monkeypatch):
+    from app import cache
+
+    store = {}
+    monkeypatch.setattr(cache, "get_json", lambda key: store.get(key))
+    monkeypatch.setattr(cache, "set_json", lambda key, value, ttl=300: store.__setitem__(key, value))
+    monkeypatch.setattr(cache, "delete", lambda *keys: [store.pop(k, None) for k in keys])
+
+    scan = make_scan(client)
+    make_resource(client, scan["id"], monthly_cost_usd=10)
+    key = f"scan:{scan['id']}:summary"
+
+    client.get(f"/scans/{scan['id']}/summary")
+    assert key in store                      # the first call fills the cache
+    assert store[key]["resource_count"] == 1
+
+    make_resource(client, scan["id"], resource_id="i-2", monthly_cost_usd=5)
+    assert key not in store                  # adding a resource clears it
+    assert client.get(f"/scans/{scan['id']}/summary").json()["resource_count"] == 2
+
+def test_resource_impact(client):
+    scan = make_scan(client)
+    server = make_resource(client, scan["id"], resource_id="i-1", name="web-server")
+    sg = make_resource(client, scan["id"], resource_type="security_group",
+                       resource_id="sg-1", name="open-ssh")
+    client.post(
+        f"/scans/{scan['id']}/dependencies",
+        json={"from_resource_id": server["id"], "to_resource_id": sg["id"],
+              "relationship": "uses_security_group"},
+    )
+    r = client.get(f"/scans/{scan['id']}/resources/{sg['id']}/impact")
+    assert r.status_code == 200
+    assert [x["name"] for x in r.json()["affected"]] == ["web-server"]
+    assert client.get(f"/scans/{scan['id']}/resources/999/impact").status_code == 404
