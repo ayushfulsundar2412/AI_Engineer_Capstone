@@ -112,3 +112,31 @@ def test_scan_summary(client):
 
 def test_summary_missing_scan_returns_404(client):
     assert client.get("/scans/999/summary").status_code == 404
+
+def test_creation_order_endpoint(client):
+    scan = make_scan(client)
+    server = make_resource(client, scan["id"], resource_id="i-1", name="web-server")
+    sg = make_resource(client, scan["id"], resource_type="security_group",
+                       resource_id="sg-1", name="open-ssh")
+    client.post(
+        f"/scans/{scan['id']}/dependencies",
+        json={"from_resource_id": server["id"], "to_resource_id": sg["id"],
+              "relationship": "uses_security_group"},
+    )
+    r = client.get(f"/scans/{scan['id']}/creation-order")
+    assert r.status_code == 200
+    names = [x["name"] for x in r.json()]
+    assert names.index("open-ssh") < names.index("web-server")
+
+
+def test_creation_order_cycle_returns_409(client):
+    scan = make_scan(client)
+    a = make_resource(client, scan["id"], resource_id="i-1")
+    b = make_resource(client, scan["id"], resource_id="i-2")
+    for src, dst in [(a, b), (b, a)]:
+        client.post(
+            f"/scans/{scan['id']}/dependencies",
+            json={"from_resource_id": src["id"], "to_resource_id": dst["id"],
+                  "relationship": "uses"},
+        )
+    assert client.get(f"/scans/{scan['id']}/creation-order").status_code == 409

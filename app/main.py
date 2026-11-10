@@ -1,5 +1,6 @@
 import json
 
+from app.ordering import CycleError, creation_order
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -9,6 +10,17 @@ from app.schemas import (
 )
 from app.database import get_conn
 from app.schemas import ResourceCreate, ResourceOut, ScanCreate, ScanOut
+
+import logging
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Cloud IaC Agent")
 
@@ -42,6 +54,7 @@ def create_scan(scan: ScanCreate, conn: Connection = Depends(get_conn)):
         ),
         {"acc": scan.account_id, "reg": scan.region},
     ).mappings().one()
+    logger.info("scan created id=%s region=%s", row["id"], scan.region)
     return dict(row)
 
 
@@ -166,3 +179,42 @@ def scan_summary(scan_id: int, conn: Connection = Depends(get_conn)):
         "total_monthly_cost_usd": float(sum(r["cost"] for r in rows)),
         "by_type": by_type,
     }
+
+@app.get("/scans/{scan_id}/creation-order")
+def get_creation_order(scan_id: int, conn: Connection = Depends(get_conn)):
+    get_scan_or_404(conn, scan_id)
+    resources = conn.execute(
+        text("SELECT id, resource_type, name FROM resources WHERE scan_id = :sid ORDER BY id"),
+        {"sid": scan_id},
+    ).mappings().all()
+    edges = conn.execute(
+        text(
+            "SELECT from_resource_id, to_resource_id "
+            "FROM resource_dependencies WHERE scan_id = :sid"
+        ),
+        {"sid": scan_id},
+    ).all()
+
+    try:
+        order = creation_order(
+            [r["id"] for r in resources], [(e[0], e[1]) for e in edges]
+        )
+    except CycleError as exc:
+        logger.warning("cycle in scan %s: %s", scan_id, exc.stuck)
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    by_id = {r["id"]: r for r in resources}
+    return [
+        {
+            "position": i + 1,
+            "id": rid,
+            "resource_type": by_id[rid]["resource_type"],
+            "name": by_id[rid]["name"],
+        }
+        for i, rid in enumerate(order)
+    ]
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
