@@ -52,3 +52,56 @@ def affected_by(resource_id: int, edges: list[tuple[int, int]]) -> list[int]:
                 queue.append(dep)
     seen.discard(resource_id)  # a loop must not list the resource as affecting itself
     return sorted(seen)
+
+class LayerCycleError(Exception):
+    """Raised when layers need each other in a loop."""
+
+    def __init__(self, apps: list[str]):
+        self.apps = apps
+        super().__init__(f"Layers depend on each other in a loop: {apps}")
+
+
+def layer_plan(resources: list[tuple[int, str]], edges: list[tuple[int, int]]) -> dict:
+    """Group resources into layers (one per app) and order the layers.
+
+    resources: (resource_id, app) pairs
+    edges: (from_id, to_id) pairs, meaning "from needs to"
+    """
+    app_of = dict(resources)
+    apps = sorted(set(app_of.values()), key=lambda a: (a != "shared", a))
+    index = {app: i for i, app in enumerate(apps)}
+
+    links = defaultdict(int)  # (from_app, to_app) -> number of arrows between them
+    for from_id, to_id in edges:
+        a, b = app_of[from_id], app_of[to_id]
+        if a != b:
+            links[(a, b)] += 1
+
+    layer_edges = [(index[a], index[b]) for (a, b) in links]
+    try:
+        order = creation_order(list(range(len(apps))), layer_edges)
+    except CycleError as exc:
+        raise LayerCycleError([apps[i] for i in exc.stuck])
+
+    members = defaultdict(list)
+    for rid, app in sorted(resources):
+        members[app].append(rid)
+
+    warnings = []
+    for (a, b), n in sorted(links.items()):
+        if a == "shared":
+            warnings.append(
+                f"The shared layer depends on the '{b}' layer ({n} links). "
+                "Shared resources should not depend on apps."
+            )
+
+    return {
+        "apply_order": [
+            {"layer": apps[i], "resource_ids": members[apps[i]]} for i in order
+        ],
+        "cross_layer_links": [
+            {"from_layer": a, "to_layer": b, "links": n}
+            for (a, b), n in sorted(links.items())
+        ],
+        "warnings": warnings,
+    }

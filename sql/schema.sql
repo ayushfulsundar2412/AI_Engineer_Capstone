@@ -12,6 +12,7 @@ CREATE TABLE resources (
     resource_type     TEXT NOT NULL,
     resource_id       TEXT NOT NULL,
     name              TEXT,
+    app               TEXT NOT NULL DEFAULT 'shared',
     config            JSONB NOT NULL DEFAULT '{}',
     monthly_cost_usd  NUMERIC(10,2),
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()

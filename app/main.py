@@ -1,6 +1,6 @@
 import json
 
-from app.ordering import CycleError, affected_by, creation_order
+from app.ordering import CycleError, LayerCycleError, affected_by, creation_order, layer_plan
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
@@ -27,7 +27,7 @@ app = FastAPI(title="Cloud IaC Agent")
 
 SCAN_COLS = "id, account_id, region, status, started_at"
 RESOURCE_COLS = (
-    "id, scan_id, resource_type, resource_id, name, config, monthly_cost_usd, created_at"
+    "id, scan_id, resource_type, resource_id, name, app, config, monthly_cost_usd, created_at"
 )
 
 
@@ -76,12 +76,12 @@ def get_scan(scan_id: int, conn: Connection = Depends(get_conn)):
 def add_resource(
     scan_id: int, resource: ResourceCreate, conn: Connection = Depends(get_conn)
 ):
-    get_scan_or_404(conn, scan_id)  # 404 if the scan doesn't exist
+    get_scan_or_404(conn, scan_id)
     row = conn.execute(
         text(
             "INSERT INTO resources "
-            "(scan_id, resource_type, resource_id, name, config, monthly_cost_usd) "
-            "VALUES (:sid, :rtype, :rid, :name, CAST(:config AS JSONB), :cost) "
+            "(scan_id, resource_type, resource_id, name, app, config, monthly_cost_usd) "
+            "VALUES (:sid, :rtype, :rid, :name, :app, CAST(:config AS JSONB), :cost) "
             f"RETURNING {RESOURCE_COLS}"
         ),
         {
@@ -89,6 +89,7 @@ def add_resource(
             "rtype": resource.resource_type,
             "rid": resource.resource_id,
             "name": resource.name,
+            "app": resource.app,
             "config": json.dumps(resource.config),
             "cost": resource.monthly_cost_usd,
         },
@@ -263,3 +264,25 @@ def resource_impact(scan_id: int, resource_id: int, conn: Connection = Depends(g
             for rid in affected
         ],
     }
+
+@app.get("/scans/{scan_id}/layers")
+def get_layers(scan_id: int, conn: Connection = Depends(get_conn)):
+    get_scan_or_404(conn, scan_id)
+    resources = conn.execute(
+        text("SELECT id, app FROM resources WHERE scan_id = :sid ORDER BY id"),
+        {"sid": scan_id},
+    ).all()
+    edges = conn.execute(
+        text(
+            "SELECT from_resource_id, to_resource_id "
+            "FROM resource_dependencies WHERE scan_id = :sid"
+        ),
+        {"sid": scan_id},
+    ).all()
+    try:
+        return layer_plan(
+            [(r[0], r[1]) for r in resources], [(e[0], e[1]) for e in edges]
+        )
+    except LayerCycleError as exc:
+        logger.warning("layer cycle in scan %s: %s", scan_id, exc.apps)
+        raise HTTPException(status_code=409, detail=str(exc))

@@ -175,3 +175,29 @@ def test_resource_impact(client):
     assert r.status_code == 200
     assert [x["name"] for x in r.json()["affected"]] == ["web-server"]
     assert client.get(f"/scans/{scan['id']}/resources/999/impact").status_code == 404
+
+def test_layers_endpoint(client):
+    scan = make_scan(client)
+    sg = make_resource(client, scan["id"], resource_type="security_group",
+                       resource_id="sg-1", name="open-ssh", app="shared")
+    server = make_resource(client, scan["id"], resource_id="i-1",
+                           name="web-server", app="billing")
+    client.post(
+        f"/scans/{scan['id']}/dependencies",
+        json={"from_resource_id": server["id"], "to_resource_id": sg["id"],
+              "relationship": "uses_security_group"},
+    )
+    r = client.get(f"/scans/{scan['id']}/layers")
+    assert r.status_code == 200
+    body = r.json()
+    assert [x["layer"] for x in body["apply_order"]] == ["shared", "billing"]
+    assert body["cross_layer_links"][0]["links"] == 1
+
+
+def test_invalid_app_name_is_rejected(client):
+    scan = make_scan(client)
+    r = client.post(
+        f"/scans/{scan['id']}/resources",
+        json={"resource_type": "s3_bucket", "resource_id": "b", "app": "Billing App"},
+    )
+    assert r.status_code == 422

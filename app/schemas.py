@@ -23,6 +23,7 @@ class ResourceCreate(BaseModel):
     resource_type: str
     resource_id: str
     name: str | None = None
+    app: str = Field(default="shared", min_length=1, max_length=50, pattern=r"^[a-z0-9-]+$")
     config: dict[str, Any] = Field(default_factory=dict)
     monthly_cost_usd: float | None = Field(default=None, ge=0) #Money can be float for now but for real cost estimates we would use decimal
 
