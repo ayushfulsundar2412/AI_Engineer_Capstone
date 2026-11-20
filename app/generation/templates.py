@@ -72,7 +72,7 @@ def _ec2_instance(r: dict, local: str, refs: dict):
         f"  instance_type = {hcl_str(instance_type)}",
     ]
     if refs.get("security_groups"):
-        ids = ", ".join(f"aws_security_group.{s}.id" for s in refs["security_groups"])
+        ids = ", ".join(refs["security_groups"])
         lines.append(f"  vpc_security_group_ids = [{ids}]")
     if r.get("name"):
         lines += ["", "  tags = {", f"    Name = {hcl_str(r['name'])}", "  }"]
